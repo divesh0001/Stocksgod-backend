@@ -9,7 +9,8 @@ import requests
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+# Allow only requests coming from https://stocksgod.live for all /api/* endpoints.
+CORS(app, resources={r"/api/*": {"origins": "https://stocksgod.live"}})
 
 @app.route('/')
 def home():
@@ -22,7 +23,7 @@ def get_data():
 # Load the trained LSTM model
 model = tf.keras.models.load_model("lstm_stock_model.h5")
 
-# Load the scaler (make sure this file has been saved separately)
+# Load the scaler (ensure this file exists in your deployed environment)
 with open("scaler.pkl", "rb") as f:
     scaler = pickle.load(f)
 
@@ -60,40 +61,42 @@ def get_stock_data(stock_symbol):
         df.index = pd.to_datetime(df.index)
         return df
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching stock data: {e}")
+        print(f"[ERROR] Error fetching stock data: {e}")
         return None
 
 def predict_stock_prices(stock_symbol):
     """Predict the next 30 days of stock prices along with current price and key milestones"""
     df = get_stock_data(stock_symbol)
     if df is None or "close" not in df.columns:
-        return {"error": "Stock data not found!"}
+        return {"error": "Stock data not found or unavailable!"}
 
     close_prices = df["close"].values.reshape(-1, 1)
-    # Use the last actual close price as the current price
     current_price = close_prices[-1][0]
-    
+
     try:
         scaled_data = scaler.transform(close_prices)
     except Exception as e:
-        print(f"[DEBUG] Error while transforming data with scaler: {e}")
+        print(f"[ERROR] Error during scaler transformation: {e}")
         return {"error": "Scaler error during data transformation!"}
 
-    X_input = scaled_data[-100:].reshape(1, 100, 1)  # Using the last 100 days for prediction input
-    predictions = []
+    try:
+        X_input = scaled_data[-100:].reshape(1, 100, 1)  # Using the last 100 days for prediction input
+        predictions = []
 
-    for _ in range(30):  # Predict next 30 days
-        pred = model.predict(X_input)
-        predictions.append(pred[0][0])
-        X_input = np.append(X_input[:, 1:, :], [[[pred[0][0]]]], axis=1)
+        for _ in range(30):  # Predict next 30 days
+            pred = model.predict(X_input)
+            predictions.append(pred[0][0])
+            X_input = np.append(X_input[:, 1:, :], [[[pred[0][0]]]], axis=1)
 
-    predicted_prices = scaler.inverse_transform(np.array(predictions).reshape(-1, 1)).flatten()
+        predicted_prices = scaler.inverse_transform(np.array(predictions).reshape(-1, 1)).flatten()
+    except Exception as e:
+        print(f"[ERROR] Error during prediction calculation: {e}")
+        return {"error": "Prediction error occurred!"}
 
-    # Convert NumPy float32 values to Python float (JSON serializable)
     result = {
         "current_price": float(current_price),
-        "price_after_15_days": float(predicted_prices[14]),  # 15th day prediction
-        "price_after_30_days": float(predicted_prices[29]),  # 30th day prediction
+        "price_after_15_days": float(predicted_prices[14]),
+        "price_after_30_days": float(predicted_prices[29]),
         "dates": [(df.index[-1] + datetime.timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(30)],
         "predicted_prices": [float(p) for p in predicted_prices.tolist()]
     }
@@ -110,4 +113,5 @@ def predict():
     return jsonify(result)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False, host="0.0.0.0")
+    
